@@ -151,43 +151,126 @@ SELECT * FROM dbo.HouseDescription d
 JOIN dbo.HouseLocation l
 ON d.HouseDescID = l.HouseLocationID;
 
+
 -- Using ZScore
+SELECT * FROM (
+	SELECT
+		HouseDescID,
+		Price,
+		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
+	FROM dbo.HouseDescription
+	)[Zscore Table]
+WHERE Zscore > 3 OR Zscore < 3;
+
+-- 3 Standard deviation away from the mean
+SELECT * FROM (
+	SELECT 
+		HouseDescID,
+		Price,
+		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
+	FROM 
+		dbo.HouseDescription
+) AS [ZScore Table]
+WHERE Zscore > 2.576 OR Zscore < -2.576;
+
+-- 2 Standard deviation away from the mean
+SELECT * FROM (
+	SELECT 
+		HouseDescID,
+		Price,
+		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
+	FROM 
+		dbo.HouseDescription
+) AS [ZScore Table]
+WHERE Zscore > 1.96 OR Zscore < -1.96;
+
+-- 1 Standard deviation away from the mean
+SELECT * FROM (
+	SELECT 
+		HouseDescID,
+		Price,
+		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
+	FROM 
+		dbo.HouseDescription
+) AS [ZScore Table]
+WHERE Zscore > 1.645 OR Zscore < -1.645;
+
+
+-- Using IQR method
+-- Begin to create store procedure to calculate IQR
+DROP PROCEDURE IF EXISTS Outlier_Using_IQR;
+CREATE PROCEDURE Outlier_Using_IQR
+	@UpperBound DECIMAL(10,2) OUTPUT,
+	@LowerBound DECIMAL(10,2) OUTPUT
+
+	AS
+		BEGIN
+			-- Declare variable to store calculate value
+			DECLARE @Count INT;
+			DECLARE @Q3 DECIMAL(10,2);
+			DECLARE @Q1 DECIMAL(10,2);
+			DECLARE @IQR DECIMAL(10,2);
+			DECLARE @Outlier DECIMAL(10,2);
+
+			-- Get the count value
+			SELECT @Count = COUNT(Price) FROM dbo.HouseDescription;
+
+			WITH OrderedList AS (
+				SELECT Price, 
+					ROW_NUMBER() OVER(ORDER BY Price) AS RowNumber -- Sorting value in asc
+				FROM dbo.HouseDescription
+			),
+			QuartileBreaks AS (	-- Retrieve each quartile its like (arr.length / 2 + 1) + arr.length / 2 + 1
+				SELECT Price,
+					(SELECT Price
+					FROM OrderedList
+					WHERE RowNumber = FLOOR((SELECT COUNT(Price) FROM dbo.HouseDescription) * 0.75)
+					) AS QThreeUpper,
+
+					(SELECT Price
+					FROM OrderedList
+					WHERE RowNumber = FLOOR((SELECT COUNT(Price) FROM dbo.HouseDescription) * 0.65 + 1)
+					) AS QThreeLower,
+
+					(SELECT Price
+					FROM OrderedList
+					WHERE RowNumber = FLOOR((SELECT COUNT(Price) FROM dbo.HouseDescription) * 0.25 + 1)
+					) AS QOneUpper,
+
+					(SELECT Price
+					FROM OrderedList
+					WHERE RowNumber = FLOOR((SELECT COUNT(Price) FROM dbo.HouseDescription) * 0.25)
+					) AS QOneLower
+			
+				FROM OrderedList
+			)
+
+			-- Calculate for IQR
+			SELECT 
+				@Q3 = (QThreeUpper + QThreeLower) / 2,
+				@Q1 = (QOneUpper + QOneLower) / 2
+			FROM QuartileBreaks;
+
+			SET @IQR = @Q3 - @Q1;
+
+			-- Calculate the outlier
+			SET @UpperBound = @Q3 + 1.5 * @IQR;
+			SET @LowerBound = @Q1 - 1.5 * @IQR;
+		END;
+
+-- Declare variables to hold the lower and upper bound calculation
+DECLARE @UpperBound DECIMAL(10,2);
+DECLARE @LowerBound DECIMAL(10,2);
+
+-- Execute the procedure and capture the output values
+EXEC Outlier_Using_IQR @UpperBound OUTPUT, @LowerBound OUTPUT;
+
+/** Retrieve using select statement by applying condition
+	where price is above or below the boundary.*/
 SELECT 
 	HouseDescID,
-	Price,
-	(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
-FROM 
-	dbo.HouseDescription
-
--- 3 STDEV away from the Mean
-SELECT * FROM (
-	SELECT 
-		HouseDescID,
-		Price,
-		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
-	FROM 
-		dbo.HouseDescription
-) AS [ZScore Table]
-WHERE Zscore > 2.576 OR Zscore < -2.576
-
--- 2 STDEV away from the Mean
-SELECT * FROM (
-	SELECT 
-		HouseDescID,
-		Price,
-		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
-	FROM 
-		dbo.HouseDescription
-) AS [ZScore Table]
-WHERE Zscore > 1.96 OR Zscore < -1.96
-
--- 1 STDEV away from the Mean
-SELECT * FROM (
-	SELECT 
-		HouseDescID,
-		Price,
-		(AVG(Price) OVER() - Price) / STDEV(Price) OVER() Zscore
-	FROM 
-		dbo.HouseDescription
-) AS [ZScore Table]
-WHERE Zscore > 1.645 OR Zscore < -1.645
+	Description,
+	Price [Over and Under Price (Outlier)]
+FROM dbo.HouseDescription
+WHERE Price < @LowerBound OR Price > @UpperBound
+ORDER BY Price DESC;
